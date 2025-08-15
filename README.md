@@ -1,250 +1,234 @@
-Here’s your **full `README.md`** with everything consolidated.
-You can save this file as `README.md` in your BVF Builder project folder.
+# BVF Builder — Sector-Smart (Ollama or OpenAI)
+
+A Streamlit app that ingests company strategy (URLs, PDFs, DOCX, or pasted text) and generates a curated **Business Value Framework (BVF)** with sector-aware labels. The visual mirrors enterprise “strategy → processes → KPIs → priorities → tech enablers”, and exports a **print-ready PDF** of the actual layout.
 
 ---
 
-````markdown
-# 🧭 Business Value Framework (BVF) Builder — Local Ollama Edition
+## ✨ What’s new
 
-A **Streamlit web application** that generates a **Business Value Framework** from strategy documents, URLs, or raw text — entirely offline using your **local Ollama LLM instance**.
-
----
-
-## 📌 Overview
-This app takes company strategy input (PDF, DOCX, URLs, or text), processes it with a **local AI model** via [Ollama](https://ollama.ai/), and outputs a **curated, sector-specific BVF**:
-
-- **Executive KPIs**
-- **Financial / Operational KPIs**
-- **Industry Strategies & Initiatives**
-- **Business Processes & Functions**
-- **Operating KPIs**
-
-The BVF is visualized in an interactive **grid** and can be exported as:
-- **PDF** (boardroom ready)
-- **CSV** (spreadsheet format)
-- **JSON** (machine-readable)
+* **LLM provider switch:** use **Ollama (local)** *or* **OpenAI API** (paste your key in the app).
+* **OpenAI SDK compatibility:** works with both **v1.x** and legacy **v0.x** clients (no more “cannot import name `OpenAI`” issues).
+* **Visual upgrades:** taller rows, **rounded corners**, **spacers between layers**, and the title **“Business Value Framework” above the boxes**.
+* **PDF export of the visual** (A4, **Landscape/Portrait**) via **Kaleido**.
+* **Sector auto-detect** (or pick a sector manually) with sector-specific headings.
+* **Curated output:** deduped, concise bullets; JSON/CSV exports too.
 
 ---
 
-## ✨ Features
-- Works **fully offline** — no API keys required
-- Uses **Ollama** to run local LLMs (`llama3`, `mistral`, `gemma`, `qwen`)
-- Accepts:
-  - **Local PDF/DOCX** uploads
-  - **Direct URLs** to strategy reports
-  - **Raw pasted text**
-- **Curated output**:
-  - Deduplicated
-  - Most relevant KPIs & strategies first
-- Multiple export formats: **PDF**, **CSV**, **JSON**
-- Interactive **BVF visual grid**
+## 🧩 Features
+
+* **Input sources:** paste URLs, upload **PDF/DOCX**, or paste raw text.
+* **Industry awareness:** Retail, Insurance, Banking, Telecom, Manufacturing, Healthcare, Public Sector, Technology/SaaS, Utilities/Energy.
+* **Layers:**
+
+  * Executive KPIs
+  * Financial / Operational KPIs
+  * Business processes & functions + function projects
+  * Operating KPIs (per function)
+  * Business priorities → Technology priorities
+* **Exports:** JSON, CSV, and **PDF of the visual layout** (scaled to page with margins).
+* **Model options:**
+
+  * **Ollama (local):** `llama3`, `mistral`, `gemma`, `qwen`
+  * **OpenAI API:** `gpt-4o-mini`, `gpt-4.1-mini`, `gpt-4o`, `gpt-3.5-turbo`
 
 ---
 
-## 📦 Requirements
-- **Python** 3.9+
-- **Ollama** (installed locally)
-- At least one downloaded **Ollama model** (`llama3` recommended)
+## 🏗️ Installation
 
----
+> Use a **Python 3.9+** virtual environment. Instructions below include **all** dependencies.
 
-## 🖥 Installation Instructions
+### macOS
 
-### 1️⃣ Install Ollama
+1. **Install Ollama (optional, for local mode)**
 
-#### **Mac**
 ```bash
 brew install ollama
-````
-
-#### **Windows**
-
-1. Download the Windows installer from:
-   [https://ollama.ai/download](https://ollama.ai/download)
-2. Run the installer and follow the prompts.
-
----
-
-### 2️⃣ Start Ollama
-
-Once installed, start the Ollama background service:
-
-#### **Mac & Windows**
-
-```bash
-ollama serve
-```
-
-Leave this running while you use the app.
-
----
-
-### 3️⃣ Download a Model
-
-The app defaults to `llama3`, but you can also use `mistral`, `gemma`, or `qwen`:
-
-```bash
 ollama pull llama3
 ```
 
-Other models:
+2. **Create a project & virtual env**
 
 ```bash
-ollama pull mistral
-ollama pull gemma
-ollama pull qwen
-```
-
----
-
-### 4️⃣ Install Python & Dependencies
-
-#### **Mac**
-
-Check Python:
-
-```bash
-python3 --version
-```
-
-If missing or old, install via Homebrew:
-
-```bash
-brew install python
-```
-
-#### **Windows**
-
-Check Python:
-
-```powershell
-python --version
-```
-
-If missing, install from:
-[https://www.python.org/downloads/](https://www.python.org/downloads/)
-
----
-
-### 5️⃣ Download the App Code
-
-Save the main Python file (e.g., `bvf_app_ollama_full.py`) into a folder.
-
----
-
-### 6️⃣ Create a Virtual Environment (recommended)
-
-#### **Mac**
-
-```bash
-cd path/to/project
+mkdir -p ~/Documents/BVF && cd ~/Documents/BVF
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-#### **Windows (PowerShell)**
+3. **Install Python packages**
+
+```bash
+pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
+```
+
+4. **Save the app**
+   Create a file named **`bvf_app_ollama_utility_sectorized.py`** and paste the app code into it (from the last message).
+
+5. **Run**
+
+* **Ollama mode:** in a **separate terminal**:
+
+  ```bash
+  ollama serve
+  ```
+* **App:**
+
+  ```bash
+  streamlit run bvf_app_ollama_utility_sectorized.py
+  ```
+
+### Windows (PowerShell)
+
+1. **Install Ollama (optional, for local mode)**
+   Download from [https://ollama.ai/download](https://ollama.ai/download), then:
 
 ```powershell
-cd path\to\project
+ollama pull llama3
+```
+
+2. **Create project & virtual env**
+
+```powershell
+mkdir $HOME\Documents\BVF
+cd $HOME\Documents\BVF
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\activate
 ```
+
+3. **Install packages**
+
+```powershell
+pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
+```
+
+4. **Save the app** as **`bvf_app_ollama_utility_sectorized.py`** (paste in the full code).
+
+5. **Run**
+
+* **Ollama service (optional, local mode):**
+
+  ```powershell
+  ollama serve
+  ```
+* **App:**
+
+  ```powershell
+  streamlit run .\bvf_app_ollama_utility_sectorized.py
+  ```
 
 ---
 
-### 7️⃣ Install Required Python Packages
+## 🚀 Using the App
 
-```bash
-pip install streamlit ollama python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab
-```
+1. **Company name** – e.g., “Aviva Insurance”.
+2. **LLM provider** – choose **Ollama (local)** or **OpenAI API**.
 
----
+   * If **OpenAI API**, paste your **API key** (`sk-...`) into the password field in the UI.
+3. **Industry sector** – select a sector or click **Auto-detect sector** after you’ve ingested some text.
+4. **Ingest content** – paste URLs, upload PDFs/DOCX, and/or paste raw text.
+5. Click **Build BVF** to generate:
 
-## 🚀 Running the App
+   * **Visual** with rounded tiles, spacers, taller rows, and title **above** the layout.
+   * **Curated JSON** representation.
+6. **Export** – Download **JSON**, **CSV**, or **PDF (visual)**.
 
-With your virtual environment activated **and** Ollama running:
-
-```bash
-streamlit run bvf_app_ollama_full.py
-```
-
-The app will open in your browser at:
-
-```
-http://localhost:8501
-```
+   * Pick **Landscape/Portrait** for the PDF in the dropdown.
+   * The PDF is rendered via **Kaleido** at high resolution and scaled to the A4 page with margins.
 
 ---
 
-## 🛠 Using the App
+## 🔧 Configuration & Models
 
-1. **Enter the company name** (e.g., `Aviva Insurance`)
-2. **Choose your Ollama model** from the dropdown
-3. **Provide strategy input**:
+* **Ollama models:** The dropdown lists `llama3`, `mistral`, `gemma`, and `qwen`. Pull what you intend to use:
 
-   * Upload **PDF/DOCX** files
-   * Paste **URLs**
-   * Paste **raw text**
-4. Click **Build BVF (Local Ollama)**
-5. Review:
-
-   * **Visual grid** of your BVF
-   * **Download** as PDF, CSV, or JSON
+  ```bash
+  ollama pull mistral
+  ```
+* **OpenAI models:** Choose from `gpt-4o-mini`, `gpt-4.1-mini`, `gpt-4o`, `gpt-3.5-turbo`.
+* **Sector labels:** Headings automatically adapt per sector (e.g., Retail uses “Value Chain & Functions” and “Store / Channel KPIs”; Public Sector uses “Mission Outcomes / KPIs”, etc.).
 
 ---
 
-## 📄 Example Output
+## 🧠 How it Works (high level)
 
-**Visual grid:**
+* **Ingestion:** Fetches web pages and PDFs (with `readability-lxml` + `pdfminer.six`); parses DOCX; or uses your pasted text.
+* **Generation:** Prompts the selected LLM to emit **strict JSON** for:
+
+  * executive\_kpis, financial\_operational\_kpis,
+  * business\_functions, operating\_kpis\_by\_function,
+  * function\_projects,
+  * business\_priorities → technology\_priorities\_by\_business\_priority.
+* **Curation:** Dedupes, caps list lengths, and standardizes ordering.
+* **Visualization:** Draws a rounded-corner, layered grid with Plotly shapes and HTML annotations.
+* **PDF export:** Uses **Kaleido** to render the exact visual to PNG, then builds a **ReportLab** PDF (A4, landscape/portrait) with proper scaling and margins.
+
+---
+
+## 🧰 Troubleshooting
+
+* **“OpenAI error: cannot import name ‘OpenAI’”**
+  The app includes a **compat layer**: it tries **OpenAI v1.x** first, then falls back to **legacy v0.x**.
+  Make sure `openai` is installed:
+
+  ```bash
+  pip install --upgrade openai
+  ```
+* **“Image export failed” when downloading PDF**
+  Kaleido missing. Install/upgrade:
+
+  ```bash
+  pip install --upgrade kaleido
+  ```
+* **“Cannot connect to Ollama”**
+  Ensure you’re running:
+
+  ```bash
+  ollama serve
+  ```
+
+  …and you’ve pulled the model you selected:
+
+  ```bash
+  ollama pull llama3
+  ```
+* **“Model did not return valid JSON”**
+  The app attempts to salvage JSON by trimming to the outermost braces. If it still fails:
+
+  * Try a different model (e.g., `llama3` or `gpt-4o-mini`).
+  * Reduce noisy input, or split long inputs into the most relevant sections.
+
+---
+
+## 🔐 Security & Privacy
+
+* **OpenAI key** is entered **in the UI** and kept **only in memory** for the session.
+* **Ollama mode** runs entirely **locally**; no data leaves your machine.
+
+---
+
+## 📦 Project Structure
+
+Single-file app by default:
 
 ```
-+---------------------------------------------------+
-| Executive KPIs  | Financial KPIs  | Strategies... |
-+---------------------------------------------------+
-| ... Curated lists per section ...                 |
-+---------------------------------------------------+
+bvf_app_ollama_utility_sectorized.py
 ```
 
-**PDF Export:**
-
-* Executive KPIs
-* Financial / Operational KPIs
-* Industry Strategies & Initiatives
-* Business Processes & Functions
-* Operating KPIs
+Outputs are generated at runtime (JSON/CSV downloaded via the UI, PDF built on demand).
 
 ---
 
-## 🧠 Tips for Best Results
+## 🗒️ Changelog (recent)
 
-* Use **sector-specific strategy reports** for best accuracy
-* `llama3` is good for general summaries, but `mistral` may produce sharper bullet lists
-* If results seem generic, try smaller, targeted source documents
-
----
-
-## ⚠ Troubleshooting
-
-* **Model not found** → Run `ollama pull llama3` (or your chosen model)
-* **Cannot connect to Ollama** → Make sure `ollama serve` is running
-* **Python module not found** → Run `pip install <missing_module>`
+* **Provider switch:** Ollama or OpenAI + API key field.
+* **OpenAI v1/v0 compatibility** helper.
+* **Visual polish:** rounded corners, increased row heights, vertical gaps, header title above grid.
+* **PDF export of the visual** (A4 landscape/portrait) via Kaleido.
+* **Sector auto-detect** and **sector-aware headings**.
+* **Curated** list lengths + dedupe.
 
 ---
 
-## 📜 License
+## 📄 License
 
-MIT License — free to use, modify, and distribute.
-
----
-
-## 🤝 Credits
-
-* [Ollama](https://ollama.ai/) — local LLM serving
-* [Streamlit](https://streamlit.io/) — interactive web interface
-
-```
-
----
-
-Do you want me to now **append a BVF data flow diagram** to this README so new users instantly understand how inputs → Ollama → BVF output works? That would make it even more visually appealing.
-```
+Internal/demo use unless licensed otherwise. Add your preferred license here.

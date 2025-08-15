@@ -1,10 +1,16 @@
 # bvf_app_ollama_utility_sectorized.py
 # Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama or OpenAI API
 #
-# Update:
-# - Title "Business Value Framework" sits ABOVE the boxes (separate header band).
-# - Keeps taller rows, vertical gaps, and rounded corners.
-# - Retains OpenAI v1/v0 compatibility, Ollama support, and visual PDF export.
+# Change in this version:
+# - Removed on-screen "Curated BVF (JSON)" view; kept JSON download button.
+#
+# Features:
+# - Provider: Ollama (local) OR OpenAI API (paste key)
+# - OpenAI SDK compatibility (v1.x and legacy v0.x)
+# - Taller rows, vertical gaps, rounded corners
+# - Title "Business Value Framework" above the boxes
+# - Visual export to PDF (landscape/portrait) via Kaleido
+# - URL fetch, PDF/DOCX uploads, raw text input
 #
 # Requirements:
 #   pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
@@ -620,14 +626,12 @@ if selected_sector != "Auto-detect from content":
 labels = get_sector_labels(effective_sector or "Utilities / Energy")
 
 if bvf and (bvf.executive_kpis or bvf.business_functions):
-    st.subheader("Curated BVF (JSON)")
-    st.json(asdict(bvf))
-
+    # Visual only (no on-screen JSON)
     st.subheader("Visual")
     fig = render_bvf_figure_utility_layout(bvf, labels)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Exports
+    # Exports (keep JSON download)
     st.subheader("Export")
     df = bvf.to_frame()
     st.download_button("Download JSON", json.dumps(asdict(bvf), indent=2), file_name=f"{bvf.company}_BVF.json")

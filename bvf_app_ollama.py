@@ -7,16 +7,17 @@
 # - Sector-aware headings (auto-detect or manual)
 # - Layered, color-coded layout (utility-style)
 # - Local PDF/DOCX upload, URL fetch, raw text
-# - Exports: PDF, CSV, JSON
+# - Exports: PDF (visual), CSV, JSON
 #
 # Requirements (install in your venv):
-#   pip install streamlit ollama python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab
+#   pip install streamlit ollama python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
 #
 # Run:
 #   1) ollama serve                 # in another terminal
 #   2) ollama pull llama3           # (or mistral / gemma / qwen)
 #   3) streamlit run bvf_app_ollama_utility_sectorized.py
 
+import io
 import json
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
@@ -30,9 +31,10 @@ import pandas as pd
 import plotly.graph_objects as go
 from ollama import chat
 from docx import Document as DocxDocument
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import getSampleStyleSheet
+from PIL import Image as PILImage
 
 # ---------------------------
 # Streamlit & Colors
@@ -304,7 +306,7 @@ def bulletify(items: List[str]) -> str:
         return "—"
     return "<br>".join([f"• {x}" for x in items])
 
-def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str]) -> go.Figure:
+def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], height_px: int = 1080) -> go.Figure:
     functions = bvf.business_functions or list(bvf.operating_kpis_by_function.keys())
     functions = functions[:10] if functions else ["Function"]
     n_cols = max(6, len(functions))
@@ -323,7 +325,7 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str]) ->
     fig.update_xaxes(visible=False, range=[0, n_cols])
     fig.update_yaxes(visible=False, range=[0, total_rows])
     fig.update_layout(
-        height=1080,
+        height=height_px,
         margin=dict(l=30, r=30, t=40, b=30),
         plot_bgcolor=PALETTE["bg"],
         paper_bgcolor=PALETTE["bg"],
@@ -409,56 +411,48 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str]) ->
     return fig
 
 # ---------------------------
-# PDF Export
+# PDF Export (visual table)
 # ---------------------------
-def export_bvf_to_pdf(bvf: BVF, filename: str, labels: Dict[str, str]):
+def export_visual_pdf(fig: go.Figure, filename: str, orientation: str = "Landscape"):
+    """
+    Renders the Plotly figure to a high-res PNG (via kaleido),
+    then places it onto an A4 page (landscape/portrait) to create the PDF.
+    """
+    # 1) Export Plotly figure to PNG bytes
+    try:
+        # Use a larger canvas for crisp output; tweak as needed
+        png_bytes = fig.to_image(format="png", width=2200, height=1240, scale=2)
+    except Exception as e:
+        st.error("Image export failed. Ensure 'kaleido' is installed: pip install kaleido")
+        raise
+
+    # 2) Determine page size
+    page_size = landscape(A4) if orientation.lower().startswith("land") else portrait(A4)
+    page_w, page_h = page_size
+    margin = 24  # points (~1/3 inch)
+
+    # 3) Compute scaled image size to fit within margins, preserving aspect ratio
+    img = PILImage.open(io.BytesIO(png_bytes))
+    iw, ih = img.size
+    max_w = page_w - 2 * margin
+    max_h = page_h - 2 * margin
+    scale = min(max_w / iw, max_h / ih)
+    draw_w = iw * scale
+    draw_h = ih * scale
+
+    # 4) Build PDF with the image centered
     styles = getSampleStyleSheet()
-    doc = SimpleDocTemplate(filename, pagesize=A4)
+    doc = SimpleDocTemplate(filename, pagesize=page_size,
+                            leftMargin=margin, rightMargin=margin,
+                            topMargin=margin, bottomMargin=margin)
     story = []
 
-    def bullets(lst: List[str]):
-        return [Paragraph(f"• {x}", styles["Normal"]) for x in lst]
+    # Title space (optional; comment out if not needed)
+    # story.append(Paragraph("Business Value Framework", styles["Title"]))
+    # story.append(Spacer(1, 6))
 
-    story.append(Paragraph(f"Business Value Framework — {bvf.company}", styles["Title"]))
-    story.append(Spacer(1, 12))
-
-    # Exec KPIs
-    story.append(Paragraph(labels["exec_label"], styles["Heading2"]))
-    story.append(Spacer(1, 6))
-    for p in bullets(bvf.executive_kpis): story.append(p)
-    story.append(Spacer(1, 10))
-
-    # Fin/Op KPIs
-    story.append(Paragraph(labels["fin_label"], styles["Heading2"]))
-    story.append(Spacer(1, 6))
-    for p in bullets(bvf.financial_operational_kpis): story.append(p)
-    story.append(Spacer(1, 10))
-
-    # Functions & projects
-    story.append(Paragraph(labels["functions_label"], styles["Heading2"]))
-    story.append(Spacer(1, 6))
-    for f in bvf.business_functions:
-        story.append(Paragraph(f, styles["Heading3"]))
-        story.append(Spacer(1, 4))
-        for p in bullets(bvf.function_projects.get(f, [])): story.append(p)
-    story.append(Spacer(1, 10))
-
-    # Operating KPIs by function
-    story.append(Paragraph(f"{labels['op_kpis_label']} (by function)", styles["Heading2"]))
-    story.append(Spacer(1, 6))
-    for f, items in bvf.operating_kpis_by_function.items():
-        story.append(Paragraph(f, styles["Heading3"]))
-        story.append(Spacer(1, 4))
-        for p in bullets(items): story.append(p)
-    story.append(Spacer(1, 10))
-
-    # Priorities + tech
-    story.append(Paragraph(labels["priorities_label"], styles["Heading2"]))
-    story.append(Spacer(1, 6))
-    for p in bvf.business_priorities:
-        story.append(Paragraph(p, styles["Heading3"]))
-        story.append(Spacer(1, 4))
-        for t in bullets(bvf.technology_priorities_by_business_priority.get(p, [])): story.append(t)
+    rl_img = RLImage(io.BytesIO(png_bytes), width=draw_w, height=draw_h)
+    story.append(rl_img)
 
     doc.build(story)
 
@@ -470,6 +464,7 @@ st.title("🧭 BVF Builder — Sector Smart (Ollama, Offline)")
 company = st.text_input("Company name", placeholder="e.g., Aviva Insurance")
 selected_sector = st.selectbox("Industry sector", SECTORS, index=0)
 model_name = st.selectbox("Ollama model to use", ["llama3", "mistral", "gemma", "qwen"], index=0)
+pdf_orientation = st.selectbox("PDF orientation", ["Landscape", "Portrait"], index=0)
 
 manual_urls = st.text_area("Optional: paste specific URLs (one per line)", height=100, placeholder="https://example.com/strategy.pdf\nhttps://investors.example.com/annual-report")
 manual_text = st.text_area("Paste raw strategy text here", height=200)
@@ -539,7 +534,12 @@ if bvf and (bvf.executive_kpis or bvf.business_functions):
     st.download_button("Download JSON", json.dumps(asdict(bvf), indent=2), file_name=f"{bvf.company}_BVF.json")
     st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), file_name=f"{bvf.company}_BVF.csv", mime="text/csv")
 
-    pdf_filename = f"{bvf.company}_BVF.pdf"
-    export_bvf_to_pdf(bvf, pdf_filename, labels)
-    with open(pdf_filename, "rb") as pdf_file:
-        st.download_button("Download PDF", pdf_file, file_name=pdf_filename, mime="application/pdf")
+    # VISUAL PDF export (landscape/portrait)
+    pdf_filename = f"{bvf.company}_BVF_visual.pdf"
+    try:
+        export_visual_pdf(fig, pdf_filename, orientation=pdf_orientation)
+        with open(pdf_filename, "rb") as pdf_file:
+            st.download_button("Download PDF (visual layout)", pdf_file, file_name=pdf_filename, mime="application/pdf")
+    except Exception:
+        # error already shown above if kaleido missing
+        pass

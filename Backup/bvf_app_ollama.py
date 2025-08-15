@@ -1,14 +1,25 @@
-# bvf_app_ollama_full.py
-# Streamlit BVF Builder using local Ollama LLM
+# bvf_app_ollama_utility_sectorized.py
+# Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama or OpenAI API
+#
+# New in this version:
+# - OpenAI SDK compatibility layer (v1.x and legacy v0.x) — no more "cannot import name 'OpenAI'" errors.
+#
 # Features:
-#  - Strict JSON-only instructions
-#  - Automatic JSON salvage if model adds extra text
-#  - Curated, deduplicated output
-#  - Model selector in UI
-#  - Local PDF & DOCX uploads
-#  - PDF export via reportlab
+# - Choose provider: Ollama (local) OR OpenAI API (paste key)
+# - Strict JSON-only prompt with salvage parsing
+# - Curated output (deduped, concise)
+# - Sector-aware headings (auto-detect or manual)
+# - Layered, color-coded layout (utility-style)
+# - Local PDF/DOCX upload, URL fetch, raw text
+# - Exports: PDF (visual via Kaleido), CSV, JSON
+#
+# Requirements (install in your venv):
+#   pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
+#
+# Run:
+#   For Ollama:   1) ollama serve   2) ollama pull llama3   3) streamlit run bvf_app_ollama_utility_sectorized.py
+#   For OpenAI:   1) streamlit run bvf_app_ollama_utility_sectorized.py (paste API key in the app UI)
 
-import os
 import io
 import json
 from dataclasses import dataclass, field, asdict
@@ -17,64 +28,170 @@ from typing import List, Dict, Optional
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from readability import Document
+from readability import Document as ReadabilityDocument
 from pdfminer.high_level import extract_text as pdf_extract_text
 import pandas as pd
 import plotly.graph_objects as go
-from ollama import chat
+from ollama import chat as ollama_chat
 from docx import Document as DocxDocument
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Image as RLImage
+from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import getSampleStyleSheet
+from PIL import Image as PILImage
 
 # ---------------------------
-# Config
+# Streamlit & Colors
 # ---------------------------
-st.set_page_config(page_title="BVF Builder (Ollama)", layout="wide")
+st.set_page_config(page_title="BVF Builder (Sector Smart • Ollama/OpenAI)", layout="wide")
 
-DEFAULT_INDUSTRY_STRATEGIES = [
-    "Omni Channel Presence",
-    "Speed to Customer",
-    "Differentiated Customer Brand Experience",
-    "Re-Define Store Operations",
-    "Distribution & Logistics",
-    "Adapt New Technologies"
+PALETTE = {
+    "bg": "#FFFFFF",
+    "exec_band": "#F2F2F2",
+    "fin_band": "#F7F7F7",
+    "functions_band_label": "#1F4E79",
+    "function_tile": "#2E75B6",
+    "function_body": "#EAF2FB",
+    "kpi_band": "#DDEBF7",
+    "priorities_band_label": "#833C99",
+    "priority_tile": "#9E57B3",
+    "priority_body": "#F3E9F8",
+    "text_dark": "#0F172A",
+}
+
+# ---------------------------
+# Sector labels mapping
+# ---------------------------
+SECTORS = [
+    "Auto-detect from content",
+    "Utilities / Energy",
+    "Retail",
+    "Insurance",
+    "Banking",
+    "Telecom",
+    "Manufacturing",
+    "Healthcare",
+    "Public Sector",
+    "Technology / SaaS",
 ]
 
+def get_sector_labels(sector: str) -> Dict[str, str]:
+    dflt = {
+        "exec_label": "Executive KPIs",
+        "fin_label": "Financial / Operational KPIs",
+        "functions_label": "Business Processes & Functions",
+        "op_kpis_label": "Operating KPIs",
+        "priorities_label": "Business Priorities",
+        "tech_priorities_label": "Technology Priorities",
+    }
+    mapping = {
+        "Utilities / Energy": dflt,
+        "Retail": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Value Chain & Functions",
+            "op_kpis_label": "Store / Channel KPIs",
+            "priorities_label": "Growth & Customer Priorities",
+            "tech_priorities_label": "Digital & Technology Enablers",
+        },
+        "Insurance": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Value Chain & Functions",
+            "op_kpis_label": "Operational KPIs",
+            "priorities_label": "Strategic Priorities",
+            "tech_priorities_label": "Technology Enablers",
+        },
+        "Banking": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Value Chain & Functions",
+            "op_kpis_label": "Operational KPIs",
+            "priorities_label": "Transformation Priorities",
+            "tech_priorities_label": "Technology Enablers",
+        },
+        "Telecom": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Network & Customer Functions",
+            "op_kpis_label": "Operational KPIs",
+            "priorities_label": "Growth & Network Priorities",
+            "tech_priorities_label": "Technology Enablers",
+        },
+        "Manufacturing": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Operations & Supply Chain Functions",
+            "op_kpis_label": "Operational KPIs",
+            "priorities_label": "Manufacturing Priorities",
+            "tech_priorities_label": "Industry 4.0 Enablers",
+        },
+        "Healthcare": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Clinical & Operational Functions",
+            "op_kpis_label": "Clinical / Operational KPIs",
+            "priorities_label": "Clinical & Transformation Priorities",
+            "tech_priorities_label": "Digital Health Enablers",
+        },
+        "Public Sector": {
+            "exec_label": "Mission Outcomes / KPIs",
+            "fin_label": "Financial / Operational KPIs",
+            "functions_label": "Programs & Service Functions",
+            "op_kpis_label": "Performance KPIs",
+            "priorities_label": "Policy & Service Priorities",
+            "tech_priorities_label": "GovTech Enablers",
+        },
+        "Technology / SaaS": {
+            "exec_label": "Executive KPIs",
+            "fin_label": "Financial / Product KPIs",
+            "functions_label": "Product & GTM Functions",
+            "op_kpis_label": "Product / Ops KPIs",
+            "priorities_label": "Growth & Platform Priorities",
+            "tech_priorities_label": "Platform & Engineering Enablers",
+        },
+    }
+    return mapping.get(sector, dflt)
+
 # ---------------------------
-# Data structures
+# Data Model
 # ---------------------------
 @dataclass
 class BVF:
     company: str
     executive_kpis: List[str] = field(default_factory=list)
     financial_operational_kpis: List[str] = field(default_factory=list)
-    industry_strategies: Dict[str, List[str]] = field(default_factory=dict)
-    business_processes_functions: Dict[str, List[str]] = field(default_factory=dict)
-    operating_kpis: Dict[str, List[str]] = field(default_factory=dict)
+    business_functions: List[str] = field(default_factory=list)
+    operating_kpis_by_function: Dict[str, List[str]] = field(default_factory=dict)
+    function_projects: Dict[str, List[str]] = field(default_factory=dict)
+    business_priorities: List[str] = field(default_factory=list)
+    technology_priorities_by_business_priority: Dict[str, List[str]] = field(default_factory=dict)
     sources: List[str] = field(default_factory=list)
 
     def curate(self):
-        """Deduplicate and shorten lists for better presentation."""
-        self.executive_kpis = sorted(set(self.executive_kpis))[:8]
-        self.financial_operational_kpis = sorted(set(self.financial_operational_kpis))[:10]
-        self.industry_strategies = {k: sorted(set(v))[:8] for k, v in self.industry_strategies.items()}
-        self.business_processes_functions = {k: sorted(set(v))[:8] for k, v in self.business_processes_functions.items()}
-        self.operating_kpis = {k: sorted(set(v))[:8] for k, v in self.operating_kpis.items()}
+        self.executive_kpis = sorted(set([s for s in self.executive_kpis if s.strip()]))[:8]
+        self.financial_operational_kpis = sorted(set([s for s in self.financial_operational_kpis if s.strip()]))[:10]
+        seen = set(); ordered = []
+        for f in self.business_functions:
+            if f and f not in seen:
+                ordered.append(f); seen.add(f)
+        self.business_functions = ordered[:10] if ordered else list(self.operating_kpis_by_function.keys())[:10]
+        self.operating_kpis_by_function = {k: sorted(set([x for x in v if x.strip()]))[:8] for k, v in self.operating_kpis_by_function.items()}
+        self.function_projects = {k: sorted(set([x for x in v if x.strip()]))[:6] for k, v in self.function_projects.items()}
+        self.business_priorities = [*dict.fromkeys([s for s in self.business_priorities if s.strip()])][:8]
+        self.technology_priorities_by_business_priority = {k: sorted(set([x for x in v if x.strip()]))[:8] for k, v in self.technology_priorities_by_business_priority.items()}
 
     def to_frame(self) -> pd.DataFrame:
         rows = []
-        for strat, inits in self.industry_strategies.items():
-            rows.append({"Section": "Industry Strategy", "Lane": strat, "Items": "\n".join(inits)})
-        for lane, items in self.business_processes_functions.items():
-            rows.append({"Section": "Business Process & Functions", "Lane": lane, "Items": "\n".join(items)})
-        for lane, items in self.operating_kpis.items():
-            rows.append({"Section": "Operating KPIs", "Lane": lane, "Items": "\n".join(items)})
+        for f in self.business_functions:
+            rows.append({"Section": "Function Projects", "Lane": f, "Items": "\n".join(self.function_projects.get(f, []))})
+        for f, items in self.operating_kpis_by_function.items():
+            rows.append({"Section": "Operating KPIs", "Lane": f, "Items": "\n".join(items)})
+        for p in self.business_priorities:
+            rows.append({"Section": "Business Priority", "Lane": p, "Items": "\n".join(self.technology_priorities_by_business_priority.get(p, []))})
         return pd.DataFrame(rows)
 
 # ---------------------------
-# Helpers
+# Helpers: ingest
 # ---------------------------
 def fetch_text(url: str) -> str:
     try:
@@ -86,33 +203,82 @@ def fetch_text(url: str) -> str:
             with open("temp.pdf", "wb") as fh:
                 fh.write(resp.content)
             return pdf_extract_text("temp.pdf")
-        doc = Document(resp.text)
+        doc = ReadabilityDocument(resp.text)
         soup = BeautifulSoup(doc.summary(), "lxml")
         return soup.get_text(separator=" ", strip=True)
     except Exception:
         return ""
 
 def read_uploaded_file(uploaded_file) -> str:
-    if uploaded_file.name.lower().endswith(".pdf"):
+    name = uploaded_file.name.lower()
+    if name.endswith(".pdf"):
         with open("temp_uploaded.pdf", "wb") as f:
             f.write(uploaded_file.read())
         return pdf_extract_text("temp_uploaded.pdf")
-    elif uploaded_file.name.lower().endswith(".docx"):
+    elif name.endswith(".docx"):
         doc = DocxDocument(uploaded_file)
         return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
     else:
         return uploaded_file.read().decode("utf-8", errors="ignore")
 
-def call_ollama(prompt: str, model: str) -> str:
-    response = chat(model=model, messages=[{"role": "user", "content": prompt}])
-    return response["message"]["content"]
+# ---------------------------
+# LLM: Providers (Ollama/OpenAI) + JSON parsing
+# ---------------------------
+def call_ollama(messages: List[Dict], model: str) -> str:
+    resp = ollama_chat(model=model, messages=messages)
+    return resp["message"]["content"]
+
+# ---- OpenAI compatibility (Option B): works with v1.x AND legacy v0.x ----
+def _openai_chat_v1(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
+    from openai import OpenAI  # v1.x
+    client = OpenAI(api_key=api_key)
+    out = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=kwargs.get("temperature", 0.2),
+        # Avoid response_format here to keep v0.x parity in behavior
+    )
+    return out.choices[0].message.content
+
+def _openai_chat_v0(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
+    import openai  # legacy v0.x
+    openai.api_key = api_key
+    out = openai.ChatCompletion.create(  # type: ignore[attr-defined]
+        model=model,
+        messages=messages,
+        temperature=kwargs.get("temperature", 0.2),
+    )
+    return out["choices"][0]["message"]["content"]
+
+def call_openai_compat(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
+    try:
+        return _openai_chat_v1(messages, model, api_key, **kwargs)
+    except ImportError:
+        # fallback to legacy v0.x
+        return _openai_chat_v0(messages, model, api_key, **kwargs)
+    except Exception as e:
+        st.error(f"OpenAI error: {e}")
+        return ""
+
+def llm_generate_json_text(prompt: str, provider: str, model: str, api_key: Optional[str]) -> str:
+    system = {
+        "role": "system",
+        "content": "You are a senior business strategist. Return only valid JSON with no extra text."
+    }
+    user = {"role": "user", "content": prompt}
+    if provider == "OpenAI API":
+        if not api_key:
+            st.error("Please enter your OpenAI API key.")
+            return ""
+        return call_openai_compat([system, user], model=model, api_key=api_key, temperature=0.2)
+    else:
+        return call_ollama([system, user], model=model)
 
 def parse_json_safely(output: str) -> Optional[dict]:
     try:
         return json.loads(output)
     except json.JSONDecodeError:
-        start = output.find("{")
-        end = output.rfind("}")
+        start = output.find("{"); end = output.rfind("}")
         if start != -1 and end != -1:
             try:
                 return json.loads(output[start:end+1])
@@ -120,37 +286,73 @@ def parse_json_safely(output: str) -> Optional[dict]:
                 return None
         return None
 
-def extract_bvf(company: str, corp_text: str, model: str) -> BVF:
+def detect_sector(corp_text: str, provider: str, model: str, api_key: Optional[str]) -> str:
+    options = [s for s in SECTORS if s != "Auto-detect from content"]
+    prompt = f"""You are an industry classifier. Choose the single best-fitting sector label from this list:
+{options}
+Return ONLY the label string, nothing else.
+
+Text:
+{corp_text[:6000]}
+"""
+    system = {"role": "system", "content": "Return only one label string, nothing else."}
+    user = {"role": "user", "content": prompt}
+    if provider == "OpenAI API":
+        if not api_key:
+            st.error("Please enter your OpenAI API key.")
+            return "Utilities / Energy"
+        try:
+            choice = call_openai_compat([system, user], model=model, api_key=api_key, temperature=0.0).strip()
+        except Exception as e:
+            st.error(f"OpenAI error (sector detect): {e}")
+            return "Utilities / Energy"
+    else:
+        choice = call_ollama([system, user], model=model).strip()
+    return choice if choice in options else "Utilities / Energy"
+
+# ---------------------------
+# Extraction (sector-agnostic schema)
+# ---------------------------
+def extract_bvf(company: str, corp_text: str, provider: str, model: str, api_key: Optional[str]) -> BVF:
     schema_hint = json.dumps({
         "executive_kpis": ["string"],
         "financial_operational_kpis": ["string"],
-        "industry_strategies": {"Strategy Name": ["Initiative1", "Initiative2"]},
-        "business_processes_functions": {"Lane Name": ["Project1", "Project2"]},
-        "operating_kpis": {"Lane Name": ["KPI1", "KPI2"]},
+        "business_functions": ["string"],
+        "operating_kpis_by_function": {"FunctionName": ["KPI1", "KPI2"]},
+        "function_projects": {"FunctionName": ["Project1", "Project2"]},
+        "business_priorities": ["string"],
+        "technology_priorities_by_business_priority": {"BusinessPriorityName": ["Tech priority 1", "Tech priority 2"]},
         "sources": ["string"]
     }, indent=2)
 
-    prompt = f"""
-You are a senior business strategist.
-Company: {company}
+    prompt = f"""Company: {company}
 
-Task:
-Based ONLY on the provided text, extract a **curated, concise, sector-specific** Business Value Framework (BVF):
-- Use clear, business-relevant, and non-generic language.
-- Remove duplicates.
-- Prioritize most impactful KPIs, strategies, and initiatives.
-- Keep each list short and to the point.
+GOAL
+Produce a curated Business Value Framework (BVF) using the layers below.
+Use concise, sector-specific, non-generic language. Remove duplicates and prioritize impact.
 
-Return ONLY valid JSON exactly matching this structure:
+LAYOUT & FIELDS (STRICT JSON ONLY):
 {schema_hint}
 
-Text to analyze:
+GUIDANCE
+- business_functions should reflect end-to-end operations for the client's sector.
+- operating_kpis_by_function: include 3–8 crisp, quantifiable KPIs per function.
+- function_projects (optional): 3–6 short bullets reflecting realistic initiatives.
+- business_priorities: 5–8 transformation themes.
+- technology_priorities_by_business_priority: 4–8 technology levers per priority.
+
+RULES
+- Return ONLY valid JSON. No explanations, code fences, or extra text.
+
+TEXT TO ANALYZE
 {corp_text[:100000]}
 """
 
-    output = call_ollama(prompt, model)
-    data = parse_json_safely(output)
+    output = llm_generate_json_text(prompt, provider=provider, model=model, api_key=api_key)
+    if not output:
+        return BVF(company=company)
 
+    data = parse_json_safely(output)
     if not data:
         st.error("❌ Model did not return valid JSON after salvage.")
         return BVF(company=company)
@@ -159,131 +361,257 @@ Text to analyze:
     bvf.curate()
     return bvf
 
-def render_bvf_figure(bvf: BVF) -> go.Figure:
-    strategies = list(bvf.industry_strategies.keys())
-    n_cols = max(5, len(strategies))
-    n_rows = 6
+# ---------------------------
+# Visualization helpers
+# ---------------------------
+def bulletify(items: List[str]) -> str:
+    if not items:
+        return "—"
+    return "<br>".join([f"• {x}" for x in items])
+
+def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], height_px: int = 1080) -> go.Figure:
+    functions = bvf.business_functions or list(bvf.operating_kpis_by_function.keys())
+    functions = functions[:10] if functions else ["Function"]
+    n_cols = max(6, len(functions))
+
+    # Row heights
+    ROW_EXEC = 1.1
+    ROW_FIN = 1.1
+    ROW_LABEL = 0.6
+    ROW_FUNCTIONS = 2.2
+    ROW_OP_KPIS = 2.2
+    ROW_PRIORITIES_LABEL = 0.6
+    ROW_PRIORITIES = 2.6
+    total_rows = ROW_EXEC + ROW_FIN + ROW_LABEL + ROW_FUNCTIONS + ROW_OP_KPIS + ROW_PRIORITIES_LABEL + ROW_PRIORITIES
 
     fig = go.Figure()
     fig.update_xaxes(visible=False, range=[0, n_cols])
-    fig.update_yaxes(visible=False, range=[0, n_rows])
-    fig.update_layout(height=900, margin=dict(l=40, r=40, t=60, b=40), showlegend=False)
+    fig.update_yaxes(visible=False, range=[0, total_rows])
+    fig.update_layout(
+        height=height_px,
+        margin=dict(l=30, r=30, t=40, b=30),
+        plot_bgcolor=PALETTE["bg"],
+        paper_bgcolor=PALETTE["bg"],
+        showlegend=False,
+    )
 
-    def box(x0, y0, x1, y1, title, body):
-        fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1, line=dict(width=1))
-        fig.add_annotation(x=(x0 + x1) / 2, y=y1 - 0.3, text=f"<b>{title}</b>", showarrow=False, yanchor="top")
-        fig.add_annotation(x=(x0 + x1) / 2, y=y1 - 0.6, text=body.replace("\n", "<br>"), showarrow=False, yanchor="top")
+    def rect(x0, y0, x1, y1, fill, line=PALETTE["text_dark"], width=1):
+        fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1,
+                      line=dict(color=line, width=width), fillcolor=fill, layer="below")
 
-    y = n_rows
-    fig.add_annotation(x=n_cols / 2, y=y - 0.5, text=f"<b>Business Value Framework — {bvf.company}</b>",
-                       showarrow=False, yanchor="top", font=dict(size=20))
-    y -= 1
+    def text_center(x, y, html, size=14, color=PALETTE["text_dark"]):
+        fig.add_annotation(x=x, y=y, text=html, showarrow=False, yanchor="middle",
+                           font=dict(size=size, color=color))
 
-    box(0, y - 1, n_cols, y, "Executive KPIs", "\n".join(bvf.executive_kpis))
-    y -= 1
-    box(0, y - 1, n_cols, y, "Financial / Operational KPIs", "\n".join(bvf.financial_operational_kpis))
-    y -= 1
+    # Title
+    y = total_rows
+    fig.add_annotation(x=n_cols/2, y=y-0.2, text=f"<b>Business Value Framework — {bvf.company}</b>",
+                       showarrow=False, yanchor="top", font=dict(size=20, color=PALETTE["text_dark"]))
 
-    col_w = n_cols / len(strategies) if strategies else n_cols
-    for i, strat in enumerate(strategies):
-        x0 = i * col_w
-        x1 = (i + 1) * col_w
-        items = bvf.industry_strategies.get(strat, [])
-        box(x0, y - 1, x1, y, strat, "\n".join(items))
-    y -= 1
+    # Exec KPIs
+    y -= ROW_EXEC
+    rect(0, y, n_cols, y+ROW_EXEC, PALETTE["exec_band"])
+    exec_text = f"<b>{sector_labels['exec_label']}</b><br><br>" + bulletify(bvf.executive_kpis)
+    text_center(n_cols/2, y + ROW_EXEC/2, exec_text)
 
-    lanes = list(bvf.business_processes_functions.keys()) or ["Processes"]
-    col_w = n_cols / len(lanes)
-    for i, lane in enumerate(lanes):
-        x0 = i * col_w
-        x1 = (i + 1) * col_w
-        items = bvf.business_processes_functions.get(lane, [])
-        box(x0, y - 1, x1, y, lane, "\n".join(items))
-    y -= 1
+    # Fin/Op KPIs
+    y -= ROW_FIN
+    rect(0, y, n_cols, y+ROW_FIN, PALETTE["fin_band"])
+    fin_text = f"<b>{sector_labels['fin_label']}</b><br><br>" + bulletify(bvf.financial_operational_kpis)
+    text_center(n_cols/2, y + ROW_FIN/2, fin_text)
 
-    lanes2 = list(bvf.operating_kpis.keys()) or lanes
-    col_w = n_cols / len(lanes2)
-    for i, lane in enumerate(lanes2):
-        x0 = i * col_w
-        x1 = (i + 1) * col_w
-        items = bvf.operating_kpis.get(lane, [])
-        box(x0, y - 1, x1, y, f"{lane} — Operating KPIs", "\n".join(items))
-    y -= 1
+    # Functions label
+    y -= ROW_LABEL
+    rect(0, y, n_cols, y+ROW_LABEL, PALETTE["functions_band_label"], line=PALETTE["functions_band_label"], width=0)
+    text_center(0.6, y + ROW_LABEL/2, f"<b style='color:white'>{sector_labels['functions_label']}</b>", color="white")
+
+    # Function tiles (with projects)
+    y -= ROW_FUNCTIONS
+    colw = n_cols / len(functions)
+    for i, f in enumerate(functions):
+        x0 = i*colw; x1 = (i+1)*colw
+        rect(x0, y+ROW_FUNCTIONS*0.75, x1, y+ROW_FUNCTIONS, PALETTE["function_tile"], line=PALETTE["function_tile"], width=0)
+        text_center((x0+x1)/2, y+ROW_FUNCTIONS*0.875, f"<b style='color:white'>{f}</b>", size=13, color="white")
+        rect(x0, y, x1, y+ROW_FUNCTIONS*0.75, PALETTE["function_body"])
+        bullets = bvf.function_projects.get(f, [])
+        body = bulletify(bullets)
+        text_center((x0+x1)/2, y+ROW_FUNCTIONS*0.375, body, size=12)
+
+    # Operating KPIs per function
+    y -= ROW_OP_KPIS
+    rect(0, y, n_cols, y+ROW_OP_KPIS, PALETTE["kpi_band"])
+    for i, f in enumerate(functions):
+        x0 = i*colw; x1 = (i+1)*colw
+        kp = bvf.operating_kpis_by_function.get(f, [])
+        rect(x0+0.05, y+0.05, x1-0.05, y+ROW_OP_KPIS-0.05, "#FFFFFF")
+        text = f"<b>{f} — {sector_labels['op_kpis_label']}</b><br><br>" + bulletify(kp)
+        text_center((x0+x1)/2, y+ROW_OP_KPIS/2, text, size=12)
+
+    # Priorities label
+    y -= ROW_PRIORITIES_LABEL
+    rect(0, y, n_cols, y+ROW_PRIORITIES_LABEL, PALETTE["priorities_band_label"], line=PALETTE["priorities_band_label"], width=0)
+    text_center(0.65, y + ROW_PRIORITIES_LABEL/2, f"<b style='color:white'>{sector_labels['priorities_label']}</b>", color="white")
+
+    # Priority tiles with tech
+    y -= ROW_PRIORITIES
+    priorities = bvf.business_priorities or list(bvf.technology_priorities_by_business_priority.keys())
+    if not priorities:
+        priorities = ["Priority"]
+    if len(priorities) > len(functions):
+        priorities = priorities[:len(functions)]
+    colw = n_cols / len(priorities)
+
+    for i, p in enumerate(priorities):
+        x0 = i*colw; x1 = (i+1)*colw
+        rect(x0, y, x1, y+ROW_PRIORITIES, PALETTE["priority_body"])
+        rect(x0, y+ROW_PRIORITIES*0.75, x1, y+ROW_PRIORITIES, PALETTE["priority_tile"], line=PALETTE["priority_tile"], width=0)
+        hdr = f"<b style='color:white'>{p}</b>"
+        text_center((x0+x1)/2, y+ROW_PRIORITIES*0.875, hdr, size=13, color="white")
+        techs = bvf.technology_priorities_by_business_priority.get(p, [])
+        body = f"<b>{sector_labels['tech_priorities_label']}</b><br><br>" + bulletify(techs)
+        text_center((x0+x1)/2, y+ROW_PRIORITIES*0.375, body, size=12)
 
     return fig
 
-def export_bvf_to_pdf(bvf: BVF, filename: str):
+# ---------------------------
+# PDF Export (visual table)
+# ---------------------------
+def export_visual_pdf(fig: go.Figure, filename: str, orientation: str = "Landscape"):
+    """
+    Renders the Plotly figure to a high-res PNG (via kaleido),
+    then places it onto an A4 page (landscape/portrait) to create the PDF.
+    """
+    try:
+        png_bytes = fig.to_image(format="png", width=2200, height=1240, scale=2)  # requires kaleido
+    except Exception:
+        st.error("Image export failed. Ensure 'kaleido' is installed: pip install kaleido")
+        raise
+
+    page_size = landscape(A4) if orientation.lower().startswith("land") else portrait(A4)
+    page_w, page_h = page_size
+    margin = 24  # points
+
+    img = PILImage.open(io.BytesIO(png_bytes))
+    iw, ih = img.size
+    max_w = page_w - 2 * margin
+    max_h = page_h - 2 * margin
+    scale = min(max_w / iw, max_h / ih)
+    draw_w = iw * scale
+    draw_h = ih * scale
+
     styles = getSampleStyleSheet()
-    doc = SimpleDocTemplate(filename, pagesize=A4)
+    doc = SimpleDocTemplate(filename, pagesize=page_size,
+                            leftMargin=margin, rightMargin=margin,
+                            topMargin=margin, bottomMargin=margin)
     story = []
-
-    story.append(Paragraph(f"Business Value Framework — {bvf.company}", styles["Title"]))
-    story.append(Spacer(1, 12))
-
-    def add_section(title, items):
-        story.append(Paragraph(f"<b>{title}</b>", styles["Heading2"]))
-        if isinstance(items, list):
-            for i in items:
-                story.append(Paragraph(f"- {i}", styles["Normal"]))
-        elif isinstance(items, dict):
-            for k, v in items.items():
-                story.append(Paragraph(f"<b>{k}</b>", styles["Heading3"]))
-                for i in v:
-                    story.append(Paragraph(f"- {i}", styles["Normal"]))
-        story.append(Spacer(1, 12))
-
-    add_section("Executive KPIs", bvf.executive_kpis)
-    add_section("Financial / Operational KPIs", bvf.financial_operational_kpis)
-    add_section("Industry Strategies", bvf.industry_strategies)
-    add_section("Business Processes & Functions", bvf.business_processes_functions)
-    add_section("Operating KPIs", bvf.operating_kpis)
-
+    rl_img = RLImage(io.BytesIO(png_bytes), width=draw_w, height=draw_h)
+    story.append(rl_img)
     doc.build(story)
 
 # ---------------------------
 # UI
 # ---------------------------
-st.title("🧭 BVF Builder ")
+st.title("🧭 BVF Builder — Sector Smart (Ollama / OpenAI)")
 
 company = st.text_input("Company name", placeholder="e.g., Aviva Insurance")
-model_name = st.selectbox("Ollama model to use", ["llama3", "mistral", "gemma", "qwen"], index=0)
 
-manual_urls = st.text_area("Optional: paste specific URLs (one per line)", height=100)
+provider = st.selectbox("LLM provider", ["Ollama (local)", "OpenAI API"], index=0)
+if provider == "Ollama (local)":
+    model_name = st.selectbox("Model", ["llama3", "mistral", "gemma", "qwen"], index=0)
+    openai_api_key = None
+else:
+    model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-3.5-turbo"], index=0)
+    openai_api_key = st.text_input("OpenAI API key", type="password", placeholder="sk-...", help="Your key is kept in memory only for this session.")
+
+pdf_orientation = st.selectbox("PDF orientation", ["Landscape", "Portrait"], index=0)
+
+selected_sector = st.selectbox("Industry sector", SECTORS, index=0)
+
+manual_urls = st.text_area("Optional: paste specific URLs (one per line)", height=100, placeholder="https://example.com/strategy.pdf\nhttps://investors.example.com/annual-report")
 manual_text = st.text_area("Paste raw strategy text here", height=200)
 
 uploaded_files = st.file_uploader("Upload local PDF or DOCX strategy files", type=["pdf", "docx"], accept_multiple_files=True)
 
-if st.button("Load Uploaded Files"):
-    file_text = ""
-    for file in uploaded_files:
-        file_text += "\n\nSOURCE: " + file.name + "\n" + read_uploaded_file(file)
-    manual_text += "\n" + file_text
+colA, colB, colC, colD = st.columns(4)
+with colA:
+    if st.button("Load Uploaded Files"):
+        file_text = ""
+        for file in uploaded_files or []:
+            file_text += "\n\nSOURCE: " + file.name + "\n" + read_uploaded_file(file)
+        manual_text += ("\n" + file_text) if file_text else ""
+        st.session_state["ingested_text"] = manual_text
 
-if st.button("Fetch from URLs"):
-    all_text = ""
-    for u in manual_urls.splitlines():
-        if u.strip():
-            all_text += f"\n\nSOURCE: {u}\n{fetch_text(u.strip())}"
-    manual_text += "\n" + all_text
+with colB:
+    if st.button("Fetch from URLs"):
+        all_text = ""
+        for u in manual_urls.splitlines():
+            u = u.strip()
+            if u:
+                all_text += f"\n\nSOURCE: {u}\n{fetch_text(u)}"
+        manual_text += ("\n" + all_text) if all_text else ""
+        st.session_state["ingested_text"] = manual_text
 
-if st.button("Build BVF (Local Ollama)", disabled=not company or not manual_text.strip()):
-    with st.spinner("Generating BVF using local Ollama..."):
-        bvf = extract_bvf(company, manual_text, model=model_name)
-        st.session_state["bvf"] = bvf
-        if bvf.executive_kpis:
-            st.success("✅ BVF generated!")
-            st.json(asdict(bvf))
+with colC:
+    if st.button("Auto-detect sector"):
+        full_text = st.session_state.get("ingested_text", "") or manual_text
+        if not full_text.strip():
+            st.warning("Add some text or URLs/files first so I can detect the sector.")
+        else:
+            sector = detect_sector(
+                full_text,
+                provider="OpenAI API" if provider == "OpenAI API" else "Ollama (local)",
+                model=model_name,
+                api_key=openai_api_key,
+            )
+            st.success(f"Detected sector: {sector}")
+            st.session_state["sector"] = sector
 
+with colD:
+    build_disabled = not company or not (manual_text.strip() or st.session_state.get("ingested_text", "").strip())
+    if st.button("Build BVF", disabled=build_disabled):
+        full_text = st.session_state.get("ingested_text", "") or manual_text
+        with st.spinner("Generating BVF..."):
+            bvf = extract_bvf(
+                company,
+                full_text,
+                provider=("OpenAI API" if provider == "OpenAI API" else "Ollama (local)"),
+                model=model_name,
+                api_key=openai_api_key,
+            )
+            st.session_state["bvf"] = bvf
+            if st.session_state.get("sector"):
+                st.session_state["sector_locked"] = st.session_state["sector"]
+
+# Results
 bvf: Optional[BVF] = st.session_state.get("bvf")
-if bvf and bvf.executive_kpis:
-    fig = render_bvf_figure(bvf)
+effective_sector = (
+    st.session_state.get("sector_locked")
+    or (st.session_state.get("sector") if selected_sector == "Auto-detect from content" else selected_sector)
+)
+if selected_sector != "Auto-detect from content":
+    effective_sector = selected_sector
+labels = get_sector_labels(effective_sector or "Utilities / Energy")
+
+if bvf and (bvf.executive_kpis or bvf.business_functions):
+    st.subheader("Curated BVF (JSON)")
+    st.json(asdict(bvf))
+
+    st.subheader("Visual")
+    fig = render_bvf_figure_utility_layout(bvf, labels)
     st.plotly_chart(fig, use_container_width=True)
+
+    # Exports
+    st.subheader("Export")
     df = bvf.to_frame()
     st.download_button("Download JSON", json.dumps(asdict(bvf), indent=2), file_name=f"{bvf.company}_BVF.json")
     st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), file_name=f"{bvf.company}_BVF.csv", mime="text/csv")
 
-    # PDF Export
-    pdf_filename = f"{bvf.company}_BVF.pdf"
-    export_bvf_to_pdf(bvf, pdf_filename)
-    with open(pdf_filename, "rb") as pdf_file:
-        st.download_button("Download PDF", pdf_file, file_name=pdf_filename, mime="application/pdf")
+    # VISUAL PDF export (landscape/portrait)
+    pdf_filename = f"{bvf.company}_BVF_visual.pdf"
+    try:
+        export_visual_pdf(fig, pdf_filename, orientation=pdf_orientation)
+        with open(pdf_filename, "rb") as pdf_file:
+            st.download_button("Download PDF (visual layout)", pdf_file, file_name=pdf_filename, mime="application/pdf")
+    except Exception:
+        # Error already surfaced if kaleido missing
+        pass

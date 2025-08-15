@@ -1,24 +1,24 @@
 # bvf_app_ollama_utility_sectorized.py
 # Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama or OpenAI API
 #
-# New in this version:
-# - OpenAI SDK compatibility layer (v1.x and legacy v0.x) — no more "cannot import name 'OpenAI'" errors.
+# What's new in this version:
+# - Taller rows so text doesn't overlap borders
+# - Small vertical gaps between layers for breathing room
+# - Rounded corner boxes (bands, tiles, and inner KPI cards)
 #
-# Features:
-# - Choose provider: Ollama (local) OR OpenAI API (paste key)
-# - Strict JSON-only prompt with salvage parsing
-# - Curated output (deduped, concise)
-# - Sector-aware headings (auto-detect or manual)
-# - Layered, color-coded layout (utility-style)
-# - Local PDF/DOCX upload, URL fetch, raw text
-# - Exports: PDF (visual via Kaleido), CSV, JSON
+# Features retained:
+# - Provider: Ollama (local) OR OpenAI API (paste key)
+# - OpenAI SDK compatibility (v1.x and legacy v0.x)
+# - Curated output (deduped, concise), sector-aware headings
+# - Visual export to PDF (landscape/portrait) via Kaleido
+# - URL fetch, PDF/DOCX uploads, raw text input
 #
-# Requirements (install in your venv):
+# Requirements:
 #   pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
 #
 # Run:
 #   For Ollama:   1) ollama serve   2) ollama pull llama3   3) streamlit run bvf_app_ollama_utility_sectorized.py
-#   For OpenAI:   1) streamlit run bvf_app_ollama_utility_sectorized.py (paste API key in the app UI)
+#   For OpenAI:   1) streamlit run bvf_app_ollama_utility_sectorized.py (paste API key in the UI)
 
 import io
 import json
@@ -236,7 +236,6 @@ def _openai_chat_v1(messages: List[Dict], model: str, api_key: str, **kwargs) ->
         model=model,
         messages=messages,
         temperature=kwargs.get("temperature", 0.2),
-        # Avoid response_format here to keep v0.x parity in behavior
     )
     return out.choices[0].message.content
 
@@ -254,17 +253,13 @@ def call_openai_compat(messages: List[Dict], model: str, api_key: str, **kwargs)
     try:
         return _openai_chat_v1(messages, model, api_key, **kwargs)
     except ImportError:
-        # fallback to legacy v0.x
         return _openai_chat_v0(messages, model, api_key, **kwargs)
     except Exception as e:
         st.error(f"OpenAI error: {e}")
         return ""
 
 def llm_generate_json_text(prompt: str, provider: str, model: str, api_key: Optional[str]) -> str:
-    system = {
-        "role": "system",
-        "content": "You are a senior business strategist. Return only valid JSON with no extra text."
-    }
+    system = {"role": "system", "content": "You are a senior business strategist. Return only valid JSON with no extra text."}
     user = {"role": "user", "content": prompt}
     if provider == "OpenAI API":
         if not api_key:
@@ -362,114 +357,161 @@ TEXT TO ANALYZE
     return bvf
 
 # ---------------------------
-# Visualization helpers
+# Visualization helpers (rounded rectangles + layout)
 # ---------------------------
 def bulletify(items: List[str]) -> str:
     if not items:
         return "—"
     return "<br>".join([f"• {x}" for x in items])
 
-def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], height_px: int = 1080) -> go.Figure:
+def _rounded_rect_path(x0, y0, x1, y1, r):
+    # Clamp the radius to half the min dimension
+    r = max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    return (
+        f"M {x0+r},{y0} "
+        f"L {x1-r},{y0} "
+        f"Q {x1},{y0} {x1},{y0+r} "
+        f"L {x1},{y1-r} "
+        f"Q {x1},{y1} {x1-r},{y1} "
+        f"L {x0+r},{y1} "
+        f"Q {x0},{y1} {x0},{y1-r} "
+        f"L {x0},{y0+r} "
+        f"Q {x0},{y0} {x0+r},{y0} Z"
+    )
+
+def add_roundrect(fig, x0, y0, x1, y1, radius, fill, line=PALETTE["text_dark"], width=1):
+    fig.add_shape(
+        type="path",
+        path=_rounded_rect_path(x0, y0, x1, y1, radius),
+        line=dict(color=line, width=width),
+        fillcolor=fill,
+        layer="below",
+    )
+
+def text_center(fig, x, y, html, size=14, color=PALETTE["text_dark"]):
+    fig.add_annotation(x=x, y=y, text=html, showarrow=False, yanchor="middle",
+                       font=dict(size=size, color=color))
+
+def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], height_px: int = 1300) -> go.Figure:
     functions = bvf.business_functions or list(bvf.operating_kpis_by_function.keys())
     functions = functions[:10] if functions else ["Function"]
     n_cols = max(6, len(functions))
 
-    # Row heights
-    ROW_EXEC = 1.1
-    ROW_FIN = 1.1
-    ROW_LABEL = 0.6
-    ROW_FUNCTIONS = 2.2
-    ROW_OP_KPIS = 2.2
-    ROW_PRIORITIES_LABEL = 0.6
-    ROW_PRIORITIES = 2.6
-    total_rows = ROW_EXEC + ROW_FIN + ROW_LABEL + ROW_FUNCTIONS + ROW_OP_KPIS + ROW_PRIORITIES_LABEL + ROW_PRIORITIES
+    # Taller rows + small vertical gaps between layers
+    ROW_EXEC = 2.0
+    ROW_FIN = 1.4
+    ROW_LABEL = 0.7
+    ROW_FUNCTIONS = 2.9
+    ROW_OP_KPIS = 2.9
+    ROW_PRIORITIES_LABEL = 0.7
+    ROW_PRIORITIES = 3.2
+    GAP = 0.18  # vertical gap between layers
+
+    total_rows = (
+        ROW_EXEC + GAP +
+        ROW_FIN + GAP +
+        ROW_LABEL +
+        ROW_FUNCTIONS + GAP +
+        ROW_OP_KPIS + GAP +
+        ROW_PRIORITIES_LABEL +
+        ROW_PRIORITIES
+    )
 
     fig = go.Figure()
     fig.update_xaxes(visible=False, range=[0, n_cols])
     fig.update_yaxes(visible=False, range=[0, total_rows])
     fig.update_layout(
         height=height_px,
-        margin=dict(l=30, r=30, t=40, b=30),
+        margin=dict(l=30, r=30, t=50, b=30),
         plot_bgcolor=PALETTE["bg"],
         paper_bgcolor=PALETTE["bg"],
         showlegend=False,
     )
 
-    def rect(x0, y0, x1, y1, fill, line=PALETTE["text_dark"], width=1):
-        fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1,
-                      line=dict(color=line, width=width), fillcolor=fill, layer="below")
-
-    def text_center(x, y, html, size=14, color=PALETTE["text_dark"]):
-        fig.add_annotation(x=x, y=y, text=html, showarrow=False, yanchor="middle",
-                           font=dict(size=size, color=color))
+    # Corner radii (relative to column width)
+    colw = n_cols / len(functions) if functions else n_cols
+    R_SMALL = 0.10
+    R_MED = 0.16
+    R_LARGE = 0.22
 
     # Title
     y = total_rows
-    fig.add_annotation(x=n_cols/2, y=y-0.2, text=f"<b>Business Value Framework — {bvf.company}</b>",
-                       showarrow=False, yanchor="top", font=dict(size=20, color=PALETTE["text_dark"]))
+    fig.add_annotation(
+        x=n_cols/2, y=y-0.2,
+        text=f"<b>Business Value Framework — {bvf.company}</b>",
+        showarrow=False, yanchor="top", font=dict(size=22, color=PALETTE["text_dark"])
+    )
 
     # Exec KPIs
     y -= ROW_EXEC
-    rect(0, y, n_cols, y+ROW_EXEC, PALETTE["exec_band"])
-    exec_text = f"<b>{sector_labels['exec_label']}</b><br><br>" + bulletify(bvf.executive_kpis)
-    text_center(n_cols/2, y + ROW_EXEC/2, exec_text)
+    add_roundrect(fig, 0, y, n_cols, y+ROW_EXEC, R_LARGE, PALETTE["exec_band"], line=PALETTE["exec_band"], width=1)
+    text_center(fig, n_cols/2, y + ROW_EXEC/2, f"<b>{sector_labels['exec_label']}</b><br><br>{bulletify(bvf.executive_kpis)}")
+
+    # Gap
+    y -= GAP
 
     # Fin/Op KPIs
     y -= ROW_FIN
-    rect(0, y, n_cols, y+ROW_FIN, PALETTE["fin_band"])
-    fin_text = f"<b>{sector_labels['fin_label']}</b><br><br>" + bulletify(bvf.financial_operational_kpis)
-    text_center(n_cols/2, y + ROW_FIN/2, fin_text)
+    add_roundrect(fig, 0, y, n_cols, y+ROW_FIN, R_LARGE, PALETTE["fin_band"], line=PALETTE["fin_band"], width=1)
+    text_center(fig, n_cols/2, y + ROW_FIN/2, f"<b>{sector_labels['fin_label']}</b><br><br>{bulletify(bvf.financial_operational_kpis)}")
 
-    # Functions label
+    # Gap
+    y -= GAP
+
+    # Functions label (rounded band)
     y -= ROW_LABEL
-    rect(0, y, n_cols, y+ROW_LABEL, PALETTE["functions_band_label"], line=PALETTE["functions_band_label"], width=0)
-    text_center(0.6, y + ROW_LABEL/2, f"<b style='color:white'>{sector_labels['functions_label']}</b>", color="white")
+    add_roundrect(fig, 0, y, n_cols, y+ROW_LABEL, R_SMALL, PALETTE["functions_band_label"], line=PALETTE["functions_band_label"], width=0)
+    text_center(fig, 0.7, y + ROW_LABEL/2, f"<b style='color:white'>{sector_labels['functions_label']}</b>", color="white")
 
     # Function tiles (with projects)
     y -= ROW_FUNCTIONS
-    colw = n_cols / len(functions)
     for i, f in enumerate(functions):
-        x0 = i*colw; x1 = (i+1)*colw
-        rect(x0, y+ROW_FUNCTIONS*0.75, x1, y+ROW_FUNCTIONS, PALETTE["function_tile"], line=PALETTE["function_tile"], width=0)
-        text_center((x0+x1)/2, y+ROW_FUNCTIONS*0.875, f"<b style='color:white'>{f}</b>", size=13, color="white")
-        rect(x0, y, x1, y+ROW_FUNCTIONS*0.75, PALETTE["function_body"])
+        x0 = i*(n_cols/len(functions)); x1 = (i+1)*(n_cols/len(functions))
+        # header strip (rounded)
+        add_roundrect(fig, x0, y+ROW_FUNCTIONS*0.78, x1, y+ROW_FUNCTIONS, R_MED, PALETTE["function_tile"], line=PALETTE["function_tile"], width=0)
+        text_center(fig, (x0+x1)/2, y+ROW_FUNCTIONS*0.89, f"<b style='color:white'>{f}</b>", size=13, color="white")
+        # body (rounded)
+        add_roundrect(fig, x0, y, x1, y+ROW_FUNCTIONS*0.78, R_MED, PALETTE["function_body"], line=PALETTE["function_body"], width=1)
         bullets = bvf.function_projects.get(f, [])
-        body = bulletify(bullets)
-        text_center((x0+x1)/2, y+ROW_FUNCTIONS*0.375, body, size=12)
+        text_center(fig, (x0+x1)/2, y+ROW_FUNCTIONS*0.39, bulletify(bullets), size=12)
 
-    # Operating KPIs per function
+    # Gap
+    y -= GAP
+
+    # Operating KPIs per function (rounded band + inner white cards)
     y -= ROW_OP_KPIS
-    rect(0, y, n_cols, y+ROW_OP_KPIS, PALETTE["kpi_band"])
+    add_roundrect(fig, 0, y, n_cols, y+ROW_OP_KPIS, R_SMALL, PALETTE["kpi_band"], line=PALETTE["kpi_band"], width=1)
     for i, f in enumerate(functions):
-        x0 = i*colw; x1 = (i+1)*colw
+        x0 = i*(n_cols/len(functions)); x1 = (i+1)*(n_cols/len(functions))
+        # inner white card with rounded corners
+        add_roundrect(fig, x0+0.06, y+0.06, x1-0.06, y+ROW_OP_KPIS-0.06, R_SMALL, "#FFFFFF", line="#CBD5E1", width=1)
         kp = bvf.operating_kpis_by_function.get(f, [])
-        rect(x0+0.05, y+0.05, x1-0.05, y+ROW_OP_KPIS-0.05, "#FFFFFF")
-        text = f"<b>{f} — {sector_labels['op_kpis_label']}</b><br><br>" + bulletify(kp)
-        text_center((x0+x1)/2, y+ROW_OP_KPIS/2, text, size=12)
+        text_center(fig, (x0+x1)/2, y+ROW_OP_KPIS/2, f"<b>{f} — {sector_labels['op_kpis_label']}</b><br><br>{bulletify(kp)}", size=12)
 
-    # Priorities label
+    # Gap
+    y -= GAP
+
+    # Priorities label (rounded)
     y -= ROW_PRIORITIES_LABEL
-    rect(0, y, n_cols, y+ROW_PRIORITIES_LABEL, PALETTE["priorities_band_label"], line=PALETTE["priorities_band_label"], width=0)
-    text_center(0.65, y + ROW_PRIORITIES_LABEL/2, f"<b style='color:white'>{sector_labels['priorities_label']}</b>", color="white")
+    add_roundrect(fig, 0, y, n_cols, y+ROW_PRIORITIES_LABEL, R_SMALL, PALETTE["priorities_band_label"], line=PALETTE["priorities_band_label"], width=0)
+    text_center(fig, 0.8, y + ROW_PRIORITIES_LABEL/2, f"<b style='color:white'>{sector_labels['priorities_label']}</b>", color="white")
 
-    # Priority tiles with tech
+    # Priorities tiles with tech (rounded)
     y -= ROW_PRIORITIES
     priorities = bvf.business_priorities or list(bvf.technology_priorities_by_business_priority.keys())
     if not priorities:
         priorities = ["Priority"]
     if len(priorities) > len(functions):
         priorities = priorities[:len(functions)]
-    colw = n_cols / len(priorities)
-
     for i, p in enumerate(priorities):
-        x0 = i*colw; x1 = (i+1)*colw
-        rect(x0, y, x1, y+ROW_PRIORITIES, PALETTE["priority_body"])
-        rect(x0, y+ROW_PRIORITIES*0.75, x1, y+ROW_PRIORITIES, PALETTE["priority_tile"], line=PALETTE["priority_tile"], width=0)
-        hdr = f"<b style='color:white'>{p}</b>"
-        text_center((x0+x1)/2, y+ROW_PRIORITIES*0.875, hdr, size=13, color="white")
+        x0 = i*(n_cols/len(priorities)); x1 = (i+1)*(n_cols/len(priorities))
+        add_roundrect(fig, x0, y, x1, y+ROW_PRIORITIES, R_MED, PALETTE["priority_body"], line=PALETTE["priority_body"], width=1)
+        # header strip
+        add_roundrect(fig, x0, y+ROW_PRIORITIES*0.78, x1, y+ROW_PRIORITIES, R_MED, PALETTE["priority_tile"], line=PALETTE["priority_tile"], width=0)
+        text_center(fig, (x0+x1)/2, y+ROW_PRIORITIES*0.89, f"<b style='color:white'>{p}</b>", size=13, color="white")
         techs = bvf.technology_priorities_by_business_priority.get(p, [])
-        body = f"<b>{sector_labels['tech_priorities_label']}</b><br><br>" + bulletify(techs)
-        text_center((x0+x1)/2, y+ROW_PRIORITIES*0.375, body, size=12)
+        body = f"<b>{sector_labels['tech_priorities_label']}</b><br><br>{bulletify(techs)}"
+        text_center(fig, (x0+x1)/2, y+ROW_PRIORITIES*0.39, body, size=12)
 
     return fig
 
@@ -477,12 +519,8 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
 # PDF Export (visual table)
 # ---------------------------
 def export_visual_pdf(fig: go.Figure, filename: str, orientation: str = "Landscape"):
-    """
-    Renders the Plotly figure to a high-res PNG (via kaleido),
-    then places it onto an A4 page (landscape/portrait) to create the PDF.
-    """
     try:
-        png_bytes = fig.to_image(format="png", width=2200, height=1240, scale=2)  # requires kaleido
+        png_bytes = fig.to_image(format="png", width=2400, height=1400, scale=2)  # crisp export
     except Exception:
         st.error("Image export failed. Ensure 'kaleido' is installed: pip install kaleido")
         raise
@@ -606,12 +644,10 @@ if bvf and (bvf.executive_kpis or bvf.business_functions):
     st.download_button("Download JSON", json.dumps(asdict(bvf), indent=2), file_name=f"{bvf.company}_BVF.json")
     st.download_button("Download CSV", df.to_csv(index=False).encode("utf-8"), file_name=f"{bvf.company}_BVF.csv", mime="text/csv")
 
-    # VISUAL PDF export (landscape/portrait)
     pdf_filename = f"{bvf.company}_BVF_visual.pdf"
     try:
         export_visual_pdf(fig, pdf_filename, orientation=pdf_orientation)
         with open(pdf_filename, "rb") as pdf_file:
             st.download_button("Download PDF (visual layout)", pdf_file, file_name=pdf_filename, mime="application/pdf")
     except Exception:
-        # Error already surfaced if kaleido missing
         pass

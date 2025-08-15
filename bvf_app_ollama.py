@@ -1,21 +1,24 @@
 # bvf_app_ollama_utility_sectorized.py
-# Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama
+# Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama or OpenAI API
+#
+# New in this version:
+# - OpenAI SDK compatibility layer (v1.x and legacy v0.x) — no more "cannot import name 'OpenAI'" errors.
 #
 # Features:
+# - Choose provider: Ollama (local) OR OpenAI API (paste key)
 # - Strict JSON-only prompt with salvage parsing
 # - Curated output (deduped, concise)
 # - Sector-aware headings (auto-detect or manual)
 # - Layered, color-coded layout (utility-style)
 # - Local PDF/DOCX upload, URL fetch, raw text
-# - Exports: PDF (visual), CSV, JSON
+# - Exports: PDF (visual via Kaleido), CSV, JSON
 #
 # Requirements (install in your venv):
-#   pip install streamlit ollama python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
+#   pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
 #
 # Run:
-#   1) ollama serve                 # in another terminal
-#   2) ollama pull llama3           # (or mistral / gemma / qwen)
-#   3) streamlit run bvf_app_ollama_utility_sectorized.py
+#   For Ollama:   1) ollama serve   2) ollama pull llama3   3) streamlit run bvf_app_ollama_utility_sectorized.py
+#   For OpenAI:   1) streamlit run bvf_app_ollama_utility_sectorized.py (paste API key in the app UI)
 
 import io
 import json
@@ -29,9 +32,9 @@ from readability import Document as ReadabilityDocument
 from pdfminer.high_level import extract_text as pdf_extract_text
 import pandas as pd
 import plotly.graph_objects as go
-from ollama import chat
+from ollama import chat as ollama_chat
 from docx import Document as DocxDocument
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Image as RLImage
 from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import getSampleStyleSheet
 from PIL import Image as PILImage
@@ -39,7 +42,7 @@ from PIL import Image as PILImage
 # ---------------------------
 # Streamlit & Colors
 # ---------------------------
-st.set_page_config(page_title="BVF Builder (Sector Smart • Ollama)", layout="wide")
+st.set_page_config(page_title="BVF Builder (Sector Smart • Ollama/OpenAI)", layout="wide")
 
 PALETTE = {
     "bg": "#FFFFFF",
@@ -219,11 +222,57 @@ def read_uploaded_file(uploaded_file) -> str:
         return uploaded_file.read().decode("utf-8", errors="ignore")
 
 # ---------------------------
-# LLM: Ollama call + parsing + sector detect
+# LLM: Providers (Ollama/OpenAI) + JSON parsing
 # ---------------------------
-def call_ollama(prompt: str, model: str) -> str:
-    response = chat(model=model, messages=[{"role": "user", "content": prompt}])
-    return response["message"]["content"]
+def call_ollama(messages: List[Dict], model: str) -> str:
+    resp = ollama_chat(model=model, messages=messages)
+    return resp["message"]["content"]
+
+# ---- OpenAI compatibility (Option B): works with v1.x AND legacy v0.x ----
+def _openai_chat_v1(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
+    from openai import OpenAI  # v1.x
+    client = OpenAI(api_key=api_key)
+    out = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=kwargs.get("temperature", 0.2),
+        # Avoid response_format here to keep v0.x parity in behavior
+    )
+    return out.choices[0].message.content
+
+def _openai_chat_v0(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
+    import openai  # legacy v0.x
+    openai.api_key = api_key
+    out = openai.ChatCompletion.create(  # type: ignore[attr-defined]
+        model=model,
+        messages=messages,
+        temperature=kwargs.get("temperature", 0.2),
+    )
+    return out["choices"][0]["message"]["content"]
+
+def call_openai_compat(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
+    try:
+        return _openai_chat_v1(messages, model, api_key, **kwargs)
+    except ImportError:
+        # fallback to legacy v0.x
+        return _openai_chat_v0(messages, model, api_key, **kwargs)
+    except Exception as e:
+        st.error(f"OpenAI error: {e}")
+        return ""
+
+def llm_generate_json_text(prompt: str, provider: str, model: str, api_key: Optional[str]) -> str:
+    system = {
+        "role": "system",
+        "content": "You are a senior business strategist. Return only valid JSON with no extra text."
+    }
+    user = {"role": "user", "content": prompt}
+    if provider == "OpenAI API":
+        if not api_key:
+            st.error("Please enter your OpenAI API key.")
+            return ""
+        return call_openai_compat([system, user], model=model, api_key=api_key, temperature=0.2)
+    else:
+        return call_ollama([system, user], model=model)
 
 def parse_json_safely(output: str) -> Optional[dict]:
     try:
@@ -237,7 +286,7 @@ def parse_json_safely(output: str) -> Optional[dict]:
                 return None
         return None
 
-def detect_sector(corp_text: str, model: str) -> str:
+def detect_sector(corp_text: str, provider: str, model: str, api_key: Optional[str]) -> str:
     options = [s for s in SECTORS if s != "Auto-detect from content"]
     prompt = f"""You are an industry classifier. Choose the single best-fitting sector label from this list:
 {options}
@@ -246,14 +295,25 @@ Return ONLY the label string, nothing else.
 Text:
 {corp_text[:6000]}
 """
-    out = call_ollama(prompt, model)
-    choice = out.strip()
+    system = {"role": "system", "content": "Return only one label string, nothing else."}
+    user = {"role": "user", "content": prompt}
+    if provider == "OpenAI API":
+        if not api_key:
+            st.error("Please enter your OpenAI API key.")
+            return "Utilities / Energy"
+        try:
+            choice = call_openai_compat([system, user], model=model, api_key=api_key, temperature=0.0).strip()
+        except Exception as e:
+            st.error(f"OpenAI error (sector detect): {e}")
+            return "Utilities / Energy"
+    else:
+        choice = call_ollama([system, user], model=model).strip()
     return choice if choice in options else "Utilities / Energy"
 
 # ---------------------------
 # Extraction (sector-agnostic schema)
 # ---------------------------
-def extract_bvf(company: str, corp_text: str, model: str) -> BVF:
+def extract_bvf(company: str, corp_text: str, provider: str, model: str, api_key: Optional[str]) -> BVF:
     schema_hint = json.dumps({
         "executive_kpis": ["string"],
         "financial_operational_kpis": ["string"],
@@ -265,8 +325,7 @@ def extract_bvf(company: str, corp_text: str, model: str) -> BVF:
         "sources": ["string"]
     }, indent=2)
 
-    prompt = f"""You are a senior business strategist.
-Company: {company}
+    prompt = f"""Company: {company}
 
 GOAL
 Produce a curated Business Value Framework (BVF) using the layers below.
@@ -289,11 +348,15 @@ TEXT TO ANALYZE
 {corp_text[:100000]}
 """
 
-    output = call_ollama(prompt, model)
+    output = llm_generate_json_text(prompt, provider=provider, model=model, api_key=api_key)
+    if not output:
+        return BVF(company=company)
+
     data = parse_json_safely(output)
     if not data:
         st.error("❌ Model did not return valid JSON after salvage.")
         return BVF(company=company)
+
     bvf = BVF(company=company, **data)
     bvf.curate()
     return bvf
@@ -418,20 +481,16 @@ def export_visual_pdf(fig: go.Figure, filename: str, orientation: str = "Landsca
     Renders the Plotly figure to a high-res PNG (via kaleido),
     then places it onto an A4 page (landscape/portrait) to create the PDF.
     """
-    # 1) Export Plotly figure to PNG bytes
     try:
-        # Use a larger canvas for crisp output; tweak as needed
-        png_bytes = fig.to_image(format="png", width=2200, height=1240, scale=2)
-    except Exception as e:
+        png_bytes = fig.to_image(format="png", width=2200, height=1240, scale=2)  # requires kaleido
+    except Exception:
         st.error("Image export failed. Ensure 'kaleido' is installed: pip install kaleido")
         raise
 
-    # 2) Determine page size
     page_size = landscape(A4) if orientation.lower().startswith("land") else portrait(A4)
     page_w, page_h = page_size
-    margin = 24  # points (~1/3 inch)
+    margin = 24  # points
 
-    # 3) Compute scaled image size to fit within margins, preserving aspect ratio
     img = PILImage.open(io.BytesIO(png_bytes))
     iw, ih = img.size
     max_w = page_w - 2 * margin
@@ -440,31 +499,33 @@ def export_visual_pdf(fig: go.Figure, filename: str, orientation: str = "Landsca
     draw_w = iw * scale
     draw_h = ih * scale
 
-    # 4) Build PDF with the image centered
     styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(filename, pagesize=page_size,
                             leftMargin=margin, rightMargin=margin,
                             topMargin=margin, bottomMargin=margin)
     story = []
-
-    # Title space (optional; comment out if not needed)
-    # story.append(Paragraph("Business Value Framework", styles["Title"]))
-    # story.append(Spacer(1, 6))
-
     rl_img = RLImage(io.BytesIO(png_bytes), width=draw_w, height=draw_h)
     story.append(rl_img)
-
     doc.build(story)
 
 # ---------------------------
 # UI
 # ---------------------------
-st.title("🧭 BVF Builder — Sector Smart (Ollama, Offline)")
+st.title("🧭 BVF Builder — Sector Smart (Ollama / OpenAI)")
 
 company = st.text_input("Company name", placeholder="e.g., Aviva Insurance")
-selected_sector = st.selectbox("Industry sector", SECTORS, index=0)
-model_name = st.selectbox("Ollama model to use", ["llama3", "mistral", "gemma", "qwen"], index=0)
+
+provider = st.selectbox("LLM provider", ["Ollama (local)", "OpenAI API"], index=0)
+if provider == "Ollama (local)":
+    model_name = st.selectbox("Model", ["llama3", "mistral", "gemma", "qwen"], index=0)
+    openai_api_key = None
+else:
+    model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-3.5-turbo"], index=0)
+    openai_api_key = st.text_input("OpenAI API key", type="password", placeholder="sk-...", help="Your key is kept in memory only for this session.")
+
 pdf_orientation = st.selectbox("PDF orientation", ["Landscape", "Portrait"], index=0)
+
+selected_sector = st.selectbox("Industry sector", SECTORS, index=0)
 
 manual_urls = st.text_area("Optional: paste specific URLs (one per line)", height=100, placeholder="https://example.com/strategy.pdf\nhttps://investors.example.com/annual-report")
 manual_text = st.text_area("Paste raw strategy text here", height=200)
@@ -491,21 +552,32 @@ with colB:
         st.session_state["ingested_text"] = manual_text
 
 with colC:
-    if st.button("Auto-detect sector (Ollama)"):
+    if st.button("Auto-detect sector"):
         full_text = st.session_state.get("ingested_text", "") or manual_text
         if not full_text.strip():
             st.warning("Add some text or URLs/files first so I can detect the sector.")
         else:
-            sector = detect_sector(full_text, model=model_name)
+            sector = detect_sector(
+                full_text,
+                provider="OpenAI API" if provider == "OpenAI API" else "Ollama (local)",
+                model=model_name,
+                api_key=openai_api_key,
+            )
             st.success(f"Detected sector: {sector}")
             st.session_state["sector"] = sector
 
 with colD:
     build_disabled = not company or not (manual_text.strip() or st.session_state.get("ingested_text", "").strip())
-    if st.button("Build BVF (Local Ollama)", disabled=build_disabled):
+    if st.button("Build BVF", disabled=build_disabled):
         full_text = st.session_state.get("ingested_text", "") or manual_text
-        with st.spinner("Generating BVF using local Ollama..."):
-            bvf = extract_bvf(company, full_text, model=model_name)
+        with st.spinner("Generating BVF..."):
+            bvf = extract_bvf(
+                company,
+                full_text,
+                provider=("OpenAI API" if provider == "OpenAI API" else "Ollama (local)"),
+                model=model_name,
+                api_key=openai_api_key,
+            )
             st.session_state["bvf"] = bvf
             if st.session_state.get("sector"):
                 st.session_state["sector_locked"] = st.session_state["sector"]
@@ -541,5 +613,5 @@ if bvf and (bvf.executive_kpis or bvf.business_functions):
         with open(pdf_filename, "rb") as pdf_file:
             st.download_button("Download PDF (visual layout)", pdf_file, file_name=pdf_filename, mime="application/pdf")
     except Exception:
-        # error already shown above if kaleido missing
+        # Error already surfaced if kaleido missing
         pass

@@ -1,24 +1,13 @@
 # bvf_app_ollama_utility_sectorized.py
 # Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama or OpenAI API
 #
-# What's new in this version:
-# - Taller rows so text doesn't overlap borders
-# - Small vertical gaps between layers for breathing room
-# - Rounded corner boxes (bands, tiles, and inner KPI cards)
-#
-# Features retained:
-# - Provider: Ollama (local) OR OpenAI API (paste key)
-# - OpenAI SDK compatibility (v1.x and legacy v0.x)
-# - Curated output (deduped, concise), sector-aware headings
-# - Visual export to PDF (landscape/portrait) via Kaleido
-# - URL fetch, PDF/DOCX uploads, raw text input
+# Update:
+# - Title "Business Value Framework" sits ABOVE the boxes (separate header band).
+# - Keeps taller rows, vertical gaps, and rounded corners.
+# - Retains OpenAI v1/v0 compatibility, Ollama support, and visual PDF export.
 #
 # Requirements:
 #   pip install streamlit ollama openai python-dotenv requests beautifulsoup4 lxml readability-lxml pdfminer.six plotly pandas pillow python-docx reportlab kaleido
-#
-# Run:
-#   For Ollama:   1) ollama serve   2) ollama pull llama3   3) streamlit run bvf_app_ollama_utility_sectorized.py
-#   For OpenAI:   1) streamlit run bvf_app_ollama_utility_sectorized.py (paste API key in the UI)
 
 import io
 import json
@@ -228,7 +217,7 @@ def call_ollama(messages: List[Dict], model: str) -> str:
     resp = ollama_chat(model=model, messages=messages)
     return resp["message"]["content"]
 
-# ---- OpenAI compatibility (Option B): works with v1.x AND legacy v0.x ----
+# ---- OpenAI compatibility (v1.x AND legacy v0.x) ----
 def _openai_chat_v1(messages: List[Dict], model: str, api_key: str, **kwargs) -> str:
     from openai import OpenAI  # v1.x
     client = OpenAI(api_key=api_key)
@@ -365,7 +354,6 @@ def bulletify(items: List[str]) -> str:
     return "<br>".join([f"• {x}" for x in items])
 
 def _rounded_rect_path(x0, y0, x1, y1, r):
-    # Clamp the radius to half the min dimension
     r = max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
     return (
         f"M {x0+r},{y0} "
@@ -398,7 +386,7 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     n_cols = max(6, len(functions))
 
     # Taller rows + small vertical gaps between layers
-    ROW_EXEC = 2.0
+    ROW_EXEC = 1.4
     ROW_FIN = 1.4
     ROW_LABEL = 0.7
     ROW_FUNCTIONS = 2.9
@@ -407,7 +395,10 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     ROW_PRIORITIES = 3.2
     GAP = 0.18  # vertical gap between layers
 
-    total_rows = (
+    # Reserve a top header band strictly for the visual title
+    TITLE_H = 0.9
+
+    content_rows = (
         ROW_EXEC + GAP +
         ROW_FIN + GAP +
         ROW_LABEL +
@@ -416,10 +407,11 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
         ROW_PRIORITIES_LABEL +
         ROW_PRIORITIES
     )
+    total_with_title = TITLE_H + content_rows
 
     fig = go.Figure()
     fig.update_xaxes(visible=False, range=[0, n_cols])
-    fig.update_yaxes(visible=False, range=[0, total_rows])
+    fig.update_yaxes(visible=False, range=[0, total_with_title])
     fig.update_layout(
         height=height_px,
         margin=dict(l=30, r=30, t=50, b=30),
@@ -428,18 +420,20 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
         showlegend=False,
     )
 
-    # Corner radii (relative to column width)
-    colw = n_cols / len(functions) if functions else n_cols
+    # Corner radii
     R_SMALL = 0.10
     R_MED = 0.16
     R_LARGE = 0.22
 
-    # Title
-    y = total_rows
-    fig.add_annotation(
-        x=n_cols/2, y=y-0.2,
-        text=f"<b>Business Value Framework — {bvf.company}</b>",
-        showarrow=False, yanchor="top", font=dict(size=22, color=PALETTE["text_dark"])
+    # Start from top (title band)
+    y = total_with_title
+
+    # Title (above boxes)
+    y -= TITLE_H
+    text_center(
+        fig, n_cols/2, y + TITLE_H/2,
+        "<b>Business Value Framework</b>",
+        size=22, color=PALETTE["text_dark"]
     )
 
     # Exec KPIs
@@ -458,7 +452,7 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     # Gap
     y -= GAP
 
-    # Functions label (rounded band)
+    # Functions label
     y -= ROW_LABEL
     add_roundrect(fig, 0, y, n_cols, y+ROW_LABEL, R_SMALL, PALETTE["functions_band_label"], line=PALETTE["functions_band_label"], width=0)
     text_center(fig, 0.7, y + ROW_LABEL/2, f"<b style='color:white'>{sector_labels['functions_label']}</b>", color="white")
@@ -467,10 +461,8 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     y -= ROW_FUNCTIONS
     for i, f in enumerate(functions):
         x0 = i*(n_cols/len(functions)); x1 = (i+1)*(n_cols/len(functions))
-        # header strip (rounded)
         add_roundrect(fig, x0, y+ROW_FUNCTIONS*0.78, x1, y+ROW_FUNCTIONS, R_MED, PALETTE["function_tile"], line=PALETTE["function_tile"], width=0)
         text_center(fig, (x0+x1)/2, y+ROW_FUNCTIONS*0.89, f"<b style='color:white'>{f}</b>", size=13, color="white")
-        # body (rounded)
         add_roundrect(fig, x0, y, x1, y+ROW_FUNCTIONS*0.78, R_MED, PALETTE["function_body"], line=PALETTE["function_body"], width=1)
         bullets = bvf.function_projects.get(f, [])
         text_center(fig, (x0+x1)/2, y+ROW_FUNCTIONS*0.39, bulletify(bullets), size=12)
@@ -478,12 +470,11 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     # Gap
     y -= GAP
 
-    # Operating KPIs per function (rounded band + inner white cards)
+    # Operating KPIs per function
     y -= ROW_OP_KPIS
     add_roundrect(fig, 0, y, n_cols, y+ROW_OP_KPIS, R_SMALL, PALETTE["kpi_band"], line=PALETTE["kpi_band"], width=1)
     for i, f in enumerate(functions):
         x0 = i*(n_cols/len(functions)); x1 = (i+1)*(n_cols/len(functions))
-        # inner white card with rounded corners
         add_roundrect(fig, x0+0.06, y+0.06, x1-0.06, y+ROW_OP_KPIS-0.06, R_SMALL, "#FFFFFF", line="#CBD5E1", width=1)
         kp = bvf.operating_kpis_by_function.get(f, [])
         text_center(fig, (x0+x1)/2, y+ROW_OP_KPIS/2, f"<b>{f} — {sector_labels['op_kpis_label']}</b><br><br>{bulletify(kp)}", size=12)
@@ -491,12 +482,12 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     # Gap
     y -= GAP
 
-    # Priorities label (rounded)
+    # Priorities label
     y -= ROW_PRIORITIES_LABEL
     add_roundrect(fig, 0, y, n_cols, y+ROW_PRIORITIES_LABEL, R_SMALL, PALETTE["priorities_band_label"], line=PALETTE["priorities_band_label"], width=0)
     text_center(fig, 0.8, y + ROW_PRIORITIES_LABEL/2, f"<b style='color:white'>{sector_labels['priorities_label']}</b>", color="white")
 
-    # Priorities tiles with tech (rounded)
+    # Priority tiles
     y -= ROW_PRIORITIES
     priorities = bvf.business_priorities or list(bvf.technology_priorities_by_business_priority.keys())
     if not priorities:
@@ -506,7 +497,6 @@ def render_bvf_figure_utility_layout(bvf: BVF, sector_labels: Dict[str, str], he
     for i, p in enumerate(priorities):
         x0 = i*(n_cols/len(priorities)); x1 = (i+1)*(n_cols/len(priorities))
         add_roundrect(fig, x0, y, x1, y+ROW_PRIORITIES, R_MED, PALETTE["priority_body"], line=PALETTE["priority_body"], width=1)
-        # header strip
         add_roundrect(fig, x0, y+ROW_PRIORITIES*0.78, x1, y+ROW_PRIORITIES, R_MED, PALETTE["priority_tile"], line=PALETTE["priority_tile"], width=0)
         text_center(fig, (x0+x1)/2, y+ROW_PRIORITIES*0.89, f"<b style='color:white'>{p}</b>", size=13, color="white")
         techs = bvf.technology_priorities_by_business_priority.get(p, [])
@@ -537,7 +527,6 @@ def export_visual_pdf(fig: go.Figure, filename: str, orientation: str = "Landsca
     draw_w = iw * scale
     draw_h = ih * scale
 
-    styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(filename, pagesize=page_size,
                             leftMargin=margin, rightMargin=margin,
                             topMargin=margin, bottomMargin=margin)

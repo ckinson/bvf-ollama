@@ -1,4 +1,4 @@
-# bvf_app_ollama_utility_sectorized.py
+# bvf_app_ollama_utility_sectorized.pyd
 # Streamlit BVF Builder (Sector-Smart Utility Layout) using local Ollama or OpenAI API
 #
 # New:
